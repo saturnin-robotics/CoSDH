@@ -26,6 +26,32 @@ def backup_script(full_path, folders_to_save=["models", "data_utils", "utils", "
         source_folder = os.path.join(current_path, f'../{folder_name}')
         shutil.copytree(source_folder, ttarget_folder)
 
+def check_missing_key(model_state_dict, ckpt_state_dict):
+    checkpoint_keys = set(ckpt_state_dict.keys())
+    model_keys = set(model_state_dict.keys())
+
+    missing_keys = model_keys - checkpoint_keys
+    extra_keys = checkpoint_keys - model_keys
+
+    missing_key_modules = set([keyname.split('.')[0] for keyname in missing_keys])
+    extra_key_modules = set([keyname.split('.')[0] for keyname in extra_keys])
+
+    print("------ Loading Checkpoint ------")
+    if len(missing_key_modules) == 0 and len(extra_key_modules) ==0:
+        return
+
+    print("Missing keys from ckpt:")
+    print(*missing_key_modules,sep='\n',end='\n\n')
+    # print(*missing_keys,sep='\n',end='\n\n')
+
+    print("Extra keys from ckpt:")
+    print(*extra_key_modules,sep='\n',end='\n\n')
+    print(*extra_keys,sep='\n',end='\n\n')
+
+    print("You can go to tools/train_utils.py to print the full missing key name!")
+    print("--------------------------------")
+
+
 def load_saved_model(saved_path, model, epoch=-1):
     """
     Load saved model if exiseted
