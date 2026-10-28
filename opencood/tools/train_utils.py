@@ -42,6 +42,14 @@ def load_saved_model(saved_path, model, epoch=-1):
     model : opencood object
         The model instance loaded pretrained params.
     """
+    # CoSDH: an explicit epoch (inference --epoch) is loaded as is
+    if epoch != -1:
+        save_file_path = os.path.join(saved_path, f'net_epoch{epoch}.pth')
+        assert os.path.isfile(save_file_path)
+        print(f"resuming by loading epoch {epoch} (specified)")
+        model.load_state_dict(torch.load(save_file_path, map_location='cpu'), strict=False)
+        return epoch, model
+
     assert os.path.exists(saved_path), '{} not found'.format(saved_path)
 
     def findLastCheckpoint(save_dir):
@@ -55,27 +63,37 @@ def load_saved_model(saved_path, model, epoch=-1):
         else:
             initial_epoch_ = 0
         return initial_epoch_
-    if epoch != -1:
-        save_file_path = os.path.join(saved_path, f'net_epoch{epoch}.pth')
-        assert os.path.isfile(save_file_path)
-        print(f"resuming by loading epoch {epoch} (specified)")
-        model.load_state_dict(torch.load(save_file_path, map_location='cpu'), strict=False)
-        return epoch, model
 
     file_list = glob.glob(os.path.join(saved_path, 'net_epoch_bestval_at*.pth'))
+    # CoopFGNN patch: resume from the latest net_epoch<N>.pth whenever one
+    # exists (a resubmitted job must not restart from an older epoch); the
+    # best-val checkpoint is used only when no epoch checkpoint exists, the
+    # most recent one if several were left behind
+    last_epochs = [int(m.group(1)) for m in
+                   (re.match(r"net_epoch(\d+)\.pth$", os.path.basename(f))
+                    for f in glob.glob(os.path.join(saved_path, 'net_epoch*.pth')))
+                   if m]
+    if last_epochs:
+        file_list = []
     if file_list:
-        assert len(file_list) == 1
+        file_list = [max(file_list, key=lambda f: int(
+            re.search(r"bestval_at(\d+)\.pth$", f).group(1)))]
         print("resuming best validation model at epoch %d" % \
                 eval(file_list[0].split("/")[-1].rstrip(".pth").lstrip("net_epoch_bestval_at")))
-        model.load_state_dict(torch.load(file_list[0] , map_location='cpu'), strict=False)
+        loaded_state_dict = torch.load(file_list[0] , map_location='cpu')
+        check_missing_key(model.state_dict(), loaded_state_dict)
+        model.load_state_dict(loaded_state_dict, strict=False)
         return eval(file_list[0].split("/")[-1].rstrip(".pth").lstrip("net_epoch_bestval_at")), model
 
-    initial_epoch = findLastCheckpoint(saved_path)
+    # CoopFGNN patch: findLastCheckpoint also globs the bestval files and
+    # fails on them, use the strict net_epoch<N>.pth list instead
+    initial_epoch = max(last_epochs) if last_epochs else 0
     if initial_epoch > 0:
         print('resuming by loading epoch %d' % initial_epoch)
-        model.load_state_dict(torch.load(
-            os.path.join(saved_path,
-                         'net_epoch%d.pth' % initial_epoch), map_location='cpu'), strict=False)
+        loaded_state_dict = torch.load(os.path.join(saved_path,
+                         'net_epoch%d.pth' % initial_epoch), map_location='cpu')
+        check_missing_key(model.state_dict(), loaded_state_dict)
+        model.load_state_dict(loaded_state_dict, strict=False)
 
     return initial_epoch, model
 
@@ -212,7 +230,7 @@ def setup_optimizer(hypes, model):
                                 lr=method_dict['lr'])
 
 
-def setup_lr_schedular(hypes, optimizer, init_epoch=None):
+def setup_lr_schedular(hypes, optimizer, init_epoch=None, n_iter_per_epoch=None):
     """
     Set up the learning rate schedular.
 
@@ -222,10 +240,34 @@ def setup_lr_schedular(hypes, optimizer, init_epoch=None):
         The training configurations.
 
     optimizer : torch.optimizer
+
+    n_iter_per_epoch : int
+        Iterations per epoch, needed by cosineannealwarm (stepped per
+        iteration with scheduler.step_update, as in OpenCOOD).
     """
     lr_schedule_config = hypes['lr_scheduler']
     last_epoch = init_epoch if init_epoch is not None else 0
-    
+
+    if lr_schedule_config['core_method'] == 'cosineannealwarm':
+        # ============================================================
+        # OpenCOOD cosine schedule with linear warmup (CoBEVT, Where2comm).
+        # Stateless in the iteration index: step_update(global_iter) gives
+        # the right learning rate after a resume.
+        # ============================================================
+        from timm.scheduler.cosine_lr import CosineLRScheduler
+        assert n_iter_per_epoch is not None
+        scheduler = CosineLRScheduler(
+            optimizer,
+            t_initial=lr_schedule_config['epoches'] * n_iter_per_epoch,
+            lr_min=lr_schedule_config['lr_min'],
+            warmup_lr_init=lr_schedule_config['warmup_lr'],
+            warmup_t=lr_schedule_config['warmup_epoches'] * n_iter_per_epoch,
+            cycle_limit=1,
+            t_in_epochs=False,
+        )
+        scheduler.step_update(last_epoch * n_iter_per_epoch)
+        return scheduler
+
 
     if lr_schedule_config['core_method'] == 'step':
         from torch.optim.lr_scheduler import StepLR
@@ -241,10 +283,15 @@ def setup_lr_schedular(hypes, optimizer, init_epoch=None):
                                 milestones=milestones,
                                 gamma=gamma)
 
-    else:
+    elif lr_schedule_config['core_method'] == 'exponential':
         from torch.optim.lr_scheduler import ExponentialLR
         gamma = lr_schedule_config['gamma']
         scheduler = ExponentialLR(optimizer, gamma)
+
+    else:
+        # Unknown names used to fall back silently to ExponentialLR
+        raise ValueError('unsupported lr scheduler %s'
+                         % lr_schedule_config['core_method'])
 
     for _ in range(last_epoch):
         scheduler.step()
