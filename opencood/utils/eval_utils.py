@@ -2,11 +2,6 @@
 # Author: Yifan Lu <yifan_lu@sjtu.edu.cn>
 # License: TDG-Attribution-NonCommercial-NoDistrib
 
-# This eval utils use correct AP calculation with global sorting of all predictions
-# Different from original OPV2V paper. 
-# See https://github.com/DerrickXuNu/OpenCOOD/issues/104
-
-
 import os
 
 import numpy as np
@@ -42,10 +37,12 @@ def voc_ap(rec, prec):
     return ap, mrec, mpre
 
 
-def caluclate_tp_fp(det_boxes, det_score, gt_boxes, result_stat, iou_thresh):
+def caluclate_tp_fp(det_boxes, det_score, gt_boxes, result_stat, iou_thresh,
+                    left_range=-float('inf'), right_range=float('inf')):
     """
     Calculate the true positive and false positive numbers of the current
     frames.
+
     Parameters
     ----------
     det_boxes : torch.Tensor
@@ -58,24 +55,52 @@ def caluclate_tp_fp(det_boxes, det_score, gt_boxes, result_stat, iou_thresh):
         A dictionary contains fp, tp and gt number.
     iou_thresh : float
         The iou thresh.
+    right_range : float
+        The evaluarion range right bound
+    left_range : float
+        The evaluation range left bound
     """
     # fp, tp and gt in the current frame
     fp = []
     tp = []
     gt = gt_boxes.shape[0]
+    
     if det_boxes is not None:
         # convert bounding boxes to numpy array
         det_boxes = common_utils.torch_tensor_to_numpy(det_boxes)
         det_score = common_utils.torch_tensor_to_numpy(det_score)
         gt_boxes = common_utils.torch_tensor_to_numpy(gt_boxes)
 
-        # sort the prediction bounding box by score
-        score_order_descend = np.argsort(-det_score)
-        det_score = det_score[score_order_descend] # from high to low
-        det_polygon_list = list(common_utils.convert_format(det_boxes))
-        gt_polygon_list = list(common_utils.convert_format(gt_boxes))
+        det_polygon_list_origin = list(common_utils.convert_format(det_boxes))
+        gt_polygon_list_origin = list(common_utils.convert_format(gt_boxes))
+        det_polygon_list = []
+        gt_polygon_list = []
+        det_score_new = []
+        # remove the bbx out of range
+        for i in range(len(det_polygon_list_origin)):
+            det_polygon = det_polygon_list_origin[i]
+            distance = np.sqrt(det_polygon.centroid.x**2 +
+                               det_polygon.centroid.y**2)
+            if left_range < distance < right_range:
+                det_polygon_list.append(det_polygon)
+                det_score_new.append(det_score[i])
 
-        # match prediction and gt bounding box, in confidence descending order
+        for i in range(len(gt_polygon_list_origin)):
+            gt_polygon = gt_polygon_list_origin[i]
+            distance = np.sqrt(gt_polygon.centroid.x**2 +
+                               gt_polygon.centroid.y**2)
+            if left_range < distance < right_range:
+                gt_polygon_list.append(gt_polygon)
+
+        gt = len(gt_polygon_list)
+        det_score_new = np.array(det_score_new)
+        # sort the prediction bounding box by score
+        score_order_descend = np.argsort(-det_score_new)
+        # CoopFGNN patch: keep scores aligned with the tp / fp lists, which
+        # are appended in descending score order (as in HEAL)
+        det_score_new = det_score_new[score_order_descend]
+
+        # match prediction and gt bounding box
         for i in range(score_order_descend.shape[0]):
             det_polygon = det_polygon_list[score_order_descend[i]]
             ious = common_utils.compute_iou(det_polygon, gt_polygon_list)
@@ -90,14 +115,16 @@ def caluclate_tp_fp(det_boxes, det_score, gt_boxes, result_stat, iou_thresh):
 
             gt_index = np.argmax(ious)
             gt_polygon_list.pop(gt_index)
-        result_stat[iou_thresh]['score'] += det_score.tolist()
+        
+        result_stat[iou_thresh]['score'] += det_score_new.tolist()
+
     result_stat[iou_thresh]['fp'] += fp
     result_stat[iou_thresh]['tp'] += tp
     result_stat[iou_thresh]['gt'] += gt
 
 
 
-def calculate_ap(result_stat, iou):
+def calculate_ap(result_stat, iou, global_sort=True):
     """
     Calculate the average precision and recall, and save them into a txt.
     Parameters
@@ -113,9 +140,15 @@ def calculate_ap(result_stat, iou):
     score = np.array(iou_5['score'])
     assert len(fp) == len(tp) and len(tp) == len(score)
 
-    sorted_index = np.argsort(-score)
-    fp = fp[sorted_index].tolist()
-    tp = tp[sorted_index].tolist()
+    # global_sort=False keeps the detections in frame order (each frame sorted
+    # by score), the AP of the OPV2V paper and of the OpenCOOD benchmark table
+    if global_sort:
+        sorted_index = np.argsort(-score)
+        fp = fp[sorted_index].tolist()
+        tp = tp[sorted_index].tolist()
+    else:
+        fp = fp.tolist()
+        tp = tp.tolist()
 
     gt_total = iou_5['gt']
 
@@ -157,13 +190,23 @@ def eval_final_results(result_stat, save_path, infer_info=None):
                       'mpre_70': mpre_70,
                       'mrec_70': mrec_70,
                       })
+    # AP without the global sort, comparable with the OPV2V paper numbers
+    ap_30_ng = calculate_ap(result_stat, 0.30, global_sort=False)[0]
+    ap_50_ng = calculate_ap(result_stat, 0.50, global_sort=False)[0]
+    ap_70_ng = calculate_ap(result_stat, 0.70, global_sort=False)[0]
+    dump_dict.update({'ap30_noglobalsort': ap_30_ng,
+                      'ap_50_noglobalsort': ap_50_ng,
+                      'ap_70_noglobalsort': ap_70_ng})
     if infer_info is None:
         yaml_utils.save_yaml(dump_dict, os.path.join(save_path, 'eval.yaml'))
     else:
         yaml_utils.save_yaml(dump_dict, os.path.join(save_path, f'eval_{infer_info}.yaml'))
 
-    print('The Average Precision at IOU 0.3 is %.2f, '
-          'The Average Precision at IOU 0.5 is %.2f, '
-          'The Average Precision at IOU 0.7 is %.2f' % (ap_30, ap_50, ap_70))
+    print(infer_info, 
+          'The Average Precision at IOU 0.3 is %.4f, '
+          'The Average Precision at IOU 0.5 is %.4f, '
+          'The Average Precision at IOU 0.7 is %.4f' % (ap_30, ap_50, ap_70))
+    print(infer_info, '(no global sort, OPV2V paper protocol)',
+          'AP@0.3 %.4f, AP@0.5 %.4f, AP@0.7 %.4f' % (ap_30_ng, ap_50_ng, ap_70_ng))
 
     return ap_30, ap_50, ap_70
