@@ -38,7 +38,16 @@ class PointPillarScatter(nn.Module):
         pillar_features, coords = batch_dict['pillar_features'], batch_dict[
             'voxel_coords']
         batch_spatial_features = []
-        batch_size = coords[:, 0].max().int().item() + 1
+        # ============================================================
+        # CoopFGNN patch: number of maps from record_len when the model
+        # passes it; from the largest pillar index, an agent without any
+        # point in range at the end of the batch would get no map and shift
+        # the per-scene groups of the fusion.
+        # ============================================================
+        if 'record_len' in batch_dict:
+            batch_size = int(batch_dict['record_len'].sum())
+        else:
+            batch_size = coords[:, 0].max().int().item() + 1
 
         for batch_idx in range(batch_size):
             spatial_feature = torch.zeros(
@@ -81,7 +90,7 @@ class SimplePointPillarScatter(nn.Module):
 
         assert self.nz == 1
 
-    def forward(self, pillar_features, coords):
+    def forward(self, pillar_features, coords, batch_size=None):
         """ 将生成的pillar按照坐标索引还原到原空间中
         Args:
             pillar_features:(M, 64)
@@ -105,7 +114,10 @@ class SimplePointPillarScatter(nn.Module):
 
         """
         batch_spatial_features = []
-        batch_size = coords[:, 0].max().int().item() + 1
+        # CoopFGNN patch: same as PointPillarScatter, batch_size given by the
+        # caller (number of agents) when known
+        if batch_size is None:
+            batch_size = coords[:, 0].max().int().item() + 1
 
         for batch_idx in range(batch_size):
             spatial_feature = torch.zeros(

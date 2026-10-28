@@ -172,7 +172,8 @@ class PointPillarCommMultiscale(nn.Module):
         req_mask = None
         if not self.training and self.req_points_threshold > 0:
             # n, -> N, 1, H, W
-            points_map = self.simple_scatter(voxel_num_points.unsqueeze(1), voxel_coords).float()
+            points_map = self.simple_scatter(voxel_num_points.unsqueeze(1), voxel_coords,
+                                             batch_size=int(record_len.sum())).float()
             smoothed_points_map = points_map
             req_mask = (smoothed_points_map < self.req_points_threshold).float()
         
