@@ -342,6 +342,11 @@ def x1_to_x2(x1, x2):
         The transformation matrix.
 
     """
+    # 6-DoF poses with pose noise are 1-D arrays (list + noise array)
+    if isinstance(x1, np.ndarray) and x1.ndim == 1:
+        x1 = x1.tolist()
+    if isinstance(x2, np.ndarray) and x2.ndim == 1:
+        x2 = x2.tolist()
     if isinstance(x1, list) and isinstance(x2, list):
         x1_to_world = x_to_world(x1)
         x2_to_world = x_to_world(x2)
