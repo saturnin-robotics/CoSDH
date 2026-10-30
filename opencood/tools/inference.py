@@ -219,5 +219,19 @@ def main():
     _, ap50, ap70 = eval_utils.eval_final_results(result_stat,
                                 opt.model_dir, infer_info)
 
+    # ============================================================
+    # Bandwidth: models that count what they transmit keep the bits sent
+    # per link in model.bandwidth (bits, links); bytes per link and frame
+    # ============================================================
+    bw = getattr(model, 'bandwidth', None)
+    if bw is not None and bw['links'] > 0:
+        per_link = bw['bits'] / bw['links'] / 8.0
+        dump = {'bytes_per_link': float(per_link),
+                'log2_bytes_per_link': float(np.log2(max(per_link, 1.0))),
+                'links': int(bw['links'])}
+        yaml_utils.save_yaml(dump, os.path.join(opt.model_dir,
+                                                f'bandwidth_{infer_info}.yaml'))
+        print(infer_info, 'bandwidth', dump)
+
 if __name__ == '__main__':
     main()

@@ -528,6 +528,14 @@ class Where2comm(nn.Module):
                     communication_masks, size=(warp_x.shape[-2], warp_x.shape[-1]),
                     mode='bilinear', align_corners=False)
             warp_x = warp_x * communication_masks
+            if not self.training:
+                # Evaluation bandwidth: cells the non-ego agents send to the
+                # ego at this scale (the model turns them into bits)
+                ego = torch.cumsum(record_len, 0) - record_len
+                sent = (communication_masks > 0).float().sum(dim=(1, 2, 3))
+                sent[ego.long()] = 0.0
+                self.sent_cells = getattr(self, "sent_cells", 0.0) + float(sent.sum())
+                self.sent_links = getattr(self, "sent_links", 0) + int((record_len - 1).sum())
         
         x_out = self.fuse_modules(warp_x, record_len,
                                   normalized_affine_matrix, use_warp_feature=False)

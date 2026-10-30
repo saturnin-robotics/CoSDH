@@ -118,6 +118,27 @@ class PointPillarCommMultiscale(nn.Module):
         return split_x
     
 
+    def count_bandwidth(self, feature_list):
+        """
+        Bits sent per link at inference, read back by inference.py: cells of
+        every scale, each with C_l / compression values (float16 when
+        compressed, as NaiveCompressor at inference, else float32) plus its
+        index on that scale.
+        """
+        import math
+        bits, links = 0.0, 0
+        for i, (fuse_module, feat) in enumerate(zip(self.fusion_net, feature_list)):
+            _, C, h, w = feat.shape
+            if self.compression:
+                value_bits = (C // self.compression_ratio) * 16
+            else:
+                value_bits = C * 32
+            cells = getattr(fuse_module, "sent_cells", 0.0)
+            bits += cells * (value_bits + math.ceil(math.log2(h * w)))
+            if i == 0:
+                links = getattr(fuse_module, "sent_links", 0)
+        self.bandwidth = {"bits": bits, "links": links}
+
     def forward(self, data_dict):
         voxel_features = data_dict['processed_lidar']['voxel_features']
         voxel_coords = data_dict['processed_lidar']['voxel_coords']
@@ -202,6 +223,8 @@ class PointPillarCommMultiscale(nn.Module):
                                                 record_len, normalized_affine_matrix, req_mask,)
 
             fused_feature_list.append(x_out)
+        if not self.training:
+            self.count_bandwidth(feature_list)
         fused_feature = self.backbone.decode_multiscale_feature(fused_feature_list)
         
         if self.shrink_flag:
