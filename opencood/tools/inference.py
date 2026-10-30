@@ -51,20 +51,12 @@ def set_random_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 
-def count_late_boxes(model, batch_data, output_dict, dataset):
+def count_late_boxes(model, boxes):
     """
-    Late part of intermediatelate: each neighbour sends its own detections
-    (its outputs after threshold and NMS), 7 box values and a score in
-    float32, 32 bytes per box. Added to model.bandwidth.
+    Late part of intermediatelate: the boxes the neighbours sent this frame
+    (counted in inference_late_fusion), 7 box values and a score in float32,
+    32 bytes per box. Added to model.bandwidth.
     """
-    boxes = 0
-    for cav_id, out in output_dict.items():
-        if cav_id == 'ego':
-            continue
-        _, score = dataset.post_processor.post_process(
-            {cav_id: batch_data[cav_id]}, {cav_id: out})
-        if score is not None:
-            boxes += int(score.numel())
     bw = model.__dict__.setdefault('bandwidth', {'bits': 0.0, 'links': 0})
     bw['box_bits'] = bw.get('box_bits', 0) + boxes * 32 * 8
     bw['box_bytes'] = bw.get('box_bytes', 0) + boxes * 32
@@ -170,8 +162,7 @@ def main():
                                         'fusion is supported.')
 
             if opt.fusion_method == 'intermediatelate':
-                count_late_boxes(model, batch_data, infer_result['output_dict'],
-                                 opencood_dataset)
+                count_late_boxes(model, infer_result['late_boxes'])
 
             pred_box_tensor = infer_result['pred_box_tensor']
             gt_box_tensor = infer_result['gt_box_tensor']

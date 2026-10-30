@@ -37,6 +37,20 @@ def inference_late_fusion(batch_data, model, dataset):
         cav_content["_ego_flag"] = cav_id == 'ego'
         output_dict[cav_id] = model(cav_content)
 
+    # ============================================================
+    # Boxes each neighbour sends (its outputs after threshold and NMS),
+    # counted before dataset.post_process, which alters output_dict
+    # ============================================================
+    late_boxes = 0
+    for cav_id, out in output_dict.items():
+        if cav_id == 'ego':
+            continue
+        single = OrderedDict({cav_id: {k: v for k, v in out.items()}})
+        _, score = dataset.post_processor.post_process(
+            {cav_id: batch_data[cav_id]}, single)
+        if score is not None:
+            late_boxes += int(score.numel())
+
     pred_box_tensor, pred_score, gt_box_tensor = \
         dataset.post_process(batch_data,
                              output_dict)
@@ -44,7 +58,7 @@ def inference_late_fusion(batch_data, model, dataset):
     return_dict = {"pred_box_tensor" : pred_box_tensor, \
                     "pred_score" : pred_score, \
                     "gt_box_tensor" : gt_box_tensor,
-                    "output_dict" : output_dict}
+                    "late_boxes" : late_boxes}
     return return_dict
 
 
