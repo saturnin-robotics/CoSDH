@@ -51,6 +51,25 @@ def set_random_seed(seed):
     torch.backends.cudnn.benchmark = False
 
 
+def count_late_boxes(model, batch_data, output_dict, dataset):
+    """
+    Late part of intermediatelate: each neighbour sends its own detections
+    (its outputs after threshold and NMS), 7 box values and a score in
+    float32, 32 bytes per box. Added to model.bandwidth.
+    """
+    boxes = 0
+    for cav_id, out in output_dict.items():
+        if cav_id == 'ego':
+            continue
+        _, score = dataset.post_processor.post_process(
+            {cav_id: batch_data[cav_id]}, {cav_id: out})
+        if score is not None:
+            boxes += int(score.numel())
+    bw = model.__dict__.setdefault('bandwidth', {'bits': 0.0, 'links': 0})
+    bw['box_bits'] = bw.get('box_bits', 0) + boxes * 32 * 8
+    bw['box_bytes'] = bw.get('box_bytes', 0) + boxes * 32
+
+
 def main():
     opt = test_parser()
 
@@ -150,6 +169,10 @@ def main():
                 raise NotImplementedError('Only single, no, no_w_uncertainty, early, late and intermediate'
                                         'fusion is supported.')
 
+            if opt.fusion_method == 'intermediatelate':
+                count_late_boxes(model, batch_data, infer_result['output_dict'],
+                                 opencood_dataset)
+
             pred_box_tensor = infer_result['pred_box_tensor']
             gt_box_tensor = infer_result['gt_box_tensor']
             pred_score = infer_result['pred_score']
@@ -225,10 +248,13 @@ def main():
     # ============================================================
     bw = getattr(model, 'bandwidth', None)
     if bw is not None and bw['links'] > 0:
-        per_link = bw['bits'] / bw['links'] / 8.0
+        per_link = (bw['bits'] + bw.get('box_bits', 0)) / bw['links'] / 8.0
         dump = {'bytes_per_link': float(per_link),
                 'log2_bytes_per_link': float(np.log2(max(per_link, 1.0))),
                 'links': int(bw['links'])}
+        if 'box_bytes' in bw:
+            # part of bytes_per_link carried by the late-fusion boxes
+            dump['box_bytes_per_link'] = float(bw['box_bytes'] / bw['links'])
         yaml_utils.save_yaml(dump, os.path.join(opt.model_dir,
                                                 f'bandwidth_{infer_info}.yaml'))
         print(infer_info, 'bandwidth', dump)
