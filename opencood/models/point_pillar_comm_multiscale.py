@@ -137,7 +137,9 @@ class PointPillarCommMultiscale(nn.Module):
             bits += cells * (value_bits + math.ceil(math.log2(h * w)))
             if i == 0:
                 links = getattr(fuse_module, "sent_links", 0)
-        self.bandwidth = {"bits": bits, "links": links}
+        # update, not replace: inference.py adds the late-fusion boxes to it
+        bw = self.__dict__.setdefault("bandwidth", {})
+        bw["bits"], bw["links"] = bits, links
 
     def forward(self, data_dict):
         voxel_features = data_dict['processed_lidar']['voxel_features']
