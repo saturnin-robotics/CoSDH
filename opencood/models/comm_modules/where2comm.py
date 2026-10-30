@@ -2,6 +2,8 @@
 # Author: Yue Hu <phyllis1sjtu@outlook.com>
 # License: TDG-Attribution-NonCommercial-NoDistrib
 
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -18,6 +20,9 @@ class Communication(nn.Module):
             self.k_ratio = args['k_ratio']
         if 'threshold' in args:
             self.threshold = args['threshold']
+        # Evaluation sweep of the selection threshold without new configs
+        if os.environ.get('WHERE2COMM_THRESHOLD'):
+            self.threshold = float(os.environ['WHERE2COMM_THRESHOLD'])
         if 'gaussian_smooth' in args:
             # Gaussian Smooth
             self.smooth = True
